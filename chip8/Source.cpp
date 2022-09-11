@@ -4,8 +4,9 @@
 #include <fstream>
 #include <iostream>
 #include <chrono>
+#include <ctime>
 
-
+#include <vector>
 
 unsigned char sprites[80] = {
 0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
@@ -48,12 +49,12 @@ public:
 
 	unsigned short input[0x10]; //input   
 	unsigned char graphics[64 * 32]; //display
+	unsigned char* graphicsptr; 
 
-	bool drawflag; //to boost performance
+	
 
-	int pixelx[64 * 32 + 1];//for double buffering
-	int pixely[64 * 32 + 1];
-	unsigned short pixelptr; 
+	//bool drawflag; //to boost performance
+
 
 	//opcodes 
 	void op_00E0();
@@ -202,6 +203,7 @@ void chip8::initialize() {
 	for (int i = 0; i < 0x10; ++i) reg[i] = 0;
 	for (int i = 0; i < 0x10; ++i) stack[i] = 0;
 	for (int i = 0; i < 64 * 32; ++i) graphics[i] = 0;
+	graphicsptr = graphics; 
 
 	//load fontset
 	const int font_start_mem = 0x50;
@@ -211,12 +213,7 @@ void chip8::initialize() {
 	dt = 0;
 	st = 0;
 
-	drawflag = false; 
-
-	//double buffering
-	pixelptr = 0;
-	for (int i = 0; i <= 64 * 32; ++i) pixelx[i] = 0; 
-	for (int i = 0; i <= 64 * 32; ++i) pixely[i] = 0; 
+	//drawflag = false; 
 }
 
 void chip8::loadROM(const char* filename)
@@ -376,49 +373,36 @@ void chip8::op_Bnnn()
 }
 void chip8::op_Cxkk()
 {
+	srand(time(NULL));
 	reg[(opcode & 0x0F00) >> 8] = (std::rand() % 255) & (opcode & 0x00FF); 
 }
 void chip8::op_Dxyn()
 {
-	drawflag = true; 
+	//drawflag = true; 
 	const int screenwidth = 64;
 	const int screenheight = 32;
-
-	int vx = reg[(opcode & 0x0F00) >> 8]; 
-	int vy = reg[(opcode & 0x00F0) >> 4];
-
-	vx %= screenwidth; 
-	vy %= screenheight; 
-
-	int n = opcode & 0x000F; 
+	const int vx = reg[(opcode & 0x0F00) >> 8] % screenwidth;
+    const int vy = reg[(opcode & 0x00F0) >> 4] % screenheight; 
+	const int n = opcode & 0x000F; 
 	 
-	reg[0xF] = 0; 
+	constexpr int COLLISION_INDEX = 0xf;
+	reg[COLLISION_INDEX] = 0;
+
 	for (int i = 0; i < n; ++i)
 	{
-		char row = mem[I + i]; 
+		const char row = mem[I + i]; 
 		for (int j = 0; j < 8; ++j)
 		{
-			unsigned char display_pixel = graphics[(vy + i) * screenwidth + vx + j];
-			unsigned char sprit_pixel = (row >> (7 - j)) & 0x0001; 
+			const int display_pixel_cor = (vy + i) * screenwidth + vx + j; 
+			const unsigned char display_pixel = graphicsptr[display_pixel_cor];
+			const unsigned char sprit_pixel = (row >> (7 - j)) & 0x0001;
+
+			graphicsptr[display_pixel_cor] ^= sprit_pixel;
 		
-			if (sprit_pixel)
-			{
-				graphics[(vy + i) * screenwidth + vx + j] ^= sprit_pixel;
-
-				//for double buffering
-				pixelx[pixelptr] = vx + j; 
-				pixely[pixelptr] = vy + i; 
-				++pixelptr;
-
-				
-			}
-
-			if (display_pixel && sprit_pixel)
-			{
-				reg[0xF] = 1; 
-			}
+			if (display_pixel && sprit_pixel) reg[COLLISION_INDEX] = 1; //0xF is collision index 
 		}
 	}
+
 }
 
 void chip8::op_Ex9E()
@@ -494,7 +478,7 @@ void chip8::op_Fx65()
 	}
 }
 
-void chip8::op_null()
+inline void chip8::op_null()
 {
 	//do nothing 
 }
@@ -566,41 +550,24 @@ void processInput(unsigned short* input, bool* quit)
 	
 }
 
-void draw(unsigned char* graphics, SDL_Window* window, SDL_Surface* windowScreen, bool* drawflag, 
-		  unsigned short& pixelptr, int* pixelx, int* pixely)
+void draw(unsigned char* graphicsptr, SDL_Window* window, SDL_Surface* windowScreen)
 {
-	
-
-	*drawflag = false; 
-	while (pixelptr)
+	for (int i = 0; i < 32; ++i)
 	{
-		--pixelptr; 
-		int x = pixelx[pixelptr]; 
-		int y = pixely[pixelptr]; 
-
-		SDL_Rect rect;
-		rect.x = x * 10;
-		rect.y = y * 10;
-		rect.w = 10;
-		rect.h = 10;
-
-		if (graphics[(y * 64) + x] == 1)
+		for (int j = 0; j < 64; ++j)
 		{
-			SDL_FillRect(windowScreen, &rect, SDL_MapRGB(windowScreen->format, 0xff, 0xff, 0xff));
+			const SDL_Rect rect{ .x = j * 10, .y = i * 10, .w = 10, .h = 10 }; 
+			const Uint8 color = (graphicsptr[(i * 64) + j] == 1 ? 0xff : 0x00);
+			SDL_FillRect(windowScreen, &rect, SDL_MapRGB(windowScreen->format, color, color, color));
 		}
-		else //can optimzie 
-		{
-			SDL_FillRect(windowScreen, &rect, SDL_MapRGB(windowScreen->format, 0x00, 0x00, 0x00));
-		}
-		SDL_UpdateWindowSurface(window);
 	}
-	
-	
+	SDL_UpdateWindowSurface(window);
 }
 
 
 int main()
 {
+
 	//create the window 
 	SDL_Init(SDL_INIT_EVERYTHING);
 	SDL_Window* window; 
@@ -616,35 +583,34 @@ int main()
 	
 
 
-	chip8* chipptr = new chip8();
-	chip8& chip = *chipptr; 
-	chip.initialize(); 
+	chip8* chip = new chip8();
+	chip->initialize(); 
 
-	const char* romfilename = "TETRIS";
-	chip.loadROM(romfilename);
+	const char* romfilename = "INVADERS";
+	chip->loadROM(romfilename);
 
 	std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now();
+	std::chrono::high_resolution_clock::time_point end;
+	std::chrono::duration<double> time_span;
 
 	bool quit = false; 
 	while (!quit)
 	{ 
-		processInput(chip.input, &quit);
+		processInput(chip->input, &quit);
 	
 		//process the time here 
-		std::chrono::high_resolution_clock::time_point end = std::chrono::high_resolution_clock::now();
-		std::chrono::duration<double> time_span = std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
+		end = std::chrono::high_resolution_clock::now();
+		time_span = std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
  
-		if (time_span.count() > 0.005667)
+		if (time_span.count() > 0.0015667)
 		{
 			start = end;
-			chip.emulate(); 
-
-			if (chip.drawflag) draw(chip.graphics, window, windowScreen1, &chip.drawflag, chip.pixelptr, chip.pixelx, chip.pixely); 
+			chip->emulate(); 
+			draw(chip->graphicsptr, window, windowScreen1); 
 		}
-		
 	}
 
-	delete chipptr;
+	delete chip;
 	SDL_DestroyWindow(window);
 	SDL_Quit(); 
 	return 0;
